@@ -40,36 +40,23 @@
 *****
 
 
+
+
 *BINDEVENT(thisForm.hwnd, goHandler.callback,        goHandler, "callbackFromGuiApp")
 *BINDEVENT(thisForm.hwnd, goHandler.callbackExiting, goHandler, "callbackFromGuiAppExiting")
 DEFINE CLASS guiThreadHandler AS Session
+	* These custom messages can be any number 1024 or higher
 	callback			= 2000
 	callbackExiting		= 2001
 	remoteHwnd			= -1
 	
 	
-	* Launches a process quietly, without a command window
+	* Launches a process quietly (without a command window)
 	PROCEDURE launchProcess
 	LPARAMETERS tcExecutable, tcCmdLine, tcStartupDirectory
 	LOCAL lcProcessInfo
-		* Declare the win32/kernel function
-		DECLARE INTEGER CreateProcess IN KERNEL32 ;
-						STRING	cExecutable, ;
-						STRING	cCmdLine, ;
-						INTEGER	nProcessAttributes, ;
-						INTEGER	nThreadAttributes, ;
-						INTEGER	lInheritHandles, ;
-						INTEGER nCreationFlags, ;
-						INTEGER nEnvironment, ;
-						STRING	cStartupDirectory, ;
-						STRING	cStartupInfo, ;
-						STRING	@cProcessInfo
-		
-		* Make space for stuff we don't even need or care about, but just so windows doesn't go bleh!
-		lcStartupInfo	= BINTOC(17 * 4, "4RS") + SPACE(1024)
-		lcProcessInfo	= SPACE(1024)
 		* Launch the process
-		lnResult = CreateProcess("\sem32\g32.exe", "\test\guithread\guithread.prg", 0, 0, 0, 0, 0, "", @lcStartupInfo, @lcProcessInfo)
+		lnResult = CreateProcess("\path\myapp.exe", "-i some -j command -k line_params", 1)
 		
 		
 
@@ -92,6 +79,8 @@ ENDDEFINE
 
 
 
+* Note:  The following code was taken from West Wind:
+*        http://www.west-wind.com/wconnect/weblog/ShowEntry.blog?id=533
 ************************************************************************
 * wwAPI :: Createprocess
 ****************************************
@@ -104,7 +93,7 @@ ENDDEFINE
 ***    Return: .t. or .f.
 ************************************************************************
 
-FUNCTION Createprocess(lcExecutable, lcCommandLine, lnShowWindow, llWaitForCompletion)
+FUNCTION Createprocess(lcExecutable, lcCommandLine, lnShowWindow)
 LOCAL hProcess, cProcessInfo, cStartupInfo
  
 DECLARE INTEGER CreateProcess IN kernel32 as _CreateProcess;
