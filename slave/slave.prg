@@ -47,8 +47,8 @@ PARAMETERS tcHwndId, tcId, tcCommand, tcP1, tcP2, tcP3, tcP4, tcP5, tcP6, tcP7, 
 * We reference objects on the thread handler
 *****
 	SET PROCEDURE TO handler.prg ADDITIVE
-	PUBLIC goMultiThread
-	goMultiThread = NEWOBJECT("MultiThreadHandler")	
+	PUBLIC goGuiThread
+	goGuiThread = NEWOBJECT("GuiThreadHandler")	
 	
 
 **********

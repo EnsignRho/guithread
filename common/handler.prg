@@ -3,46 +3,91 @@
 * handler.prg
 *
 *****
-* November 07, 2012
+* June 13, 2013
 * by Rick C. Hodgin
 *****
 
 
 
 
+
+
+
+
+
 **********
+*
+* Initialization steps.
 * Each app should create a single object:
 *
-* Initialization steps:
 *		main.prg:
 *				SET PROCEDURE TO handler.prg ADDITIVE
+*				**********
+*				* It is recommended to subclass GuiThreadHandler and create
+*				* custom methods for the mth() and on() functions.
+*				**********
+*
 *		frmMain.Init():
-*				PUBLIC goMultiThread
-*				* To initialize as master:  goMultiThread = CREATEOBJECT("MultiThreadHandler", thisForm, .t.)
-*				* To initialize as slave:   goMultiThread = CREATEOBJECT("MultiThreadHandler", thisForm)
+*				**********
+*				* To initialize as master:
+*				*****
+*					PUBLIC goGuiThread
+*					goGuiThread = CREATEOBJECT("GuiThreadHandler", thisForm, .t.)
+*
+*				**********
+*				* To initialize as slave:
+*				*****
+*					PUBLIC goGuiThread
+*					oGuiThread = CREATEOBJECT("GuiThreadHandler", thisForm)
 *
 **********
-* Usage (the following use these parameters: tnValue, tnExtra, tcIdentifier, tcCommand):
-*		mth_execute_remote_command					- Asks the remote to execute a command
-*		mth_execute_remote_command_return_result	- Asks the remote to execute a command and then return the result
-*		mth_send_general_message					- Sends the remote a general message
-*		mth_send_response							- Send a response from a mth_execute_remote_command_return_result() call
+*	Usage by Master only:
+*		initializeMaster()								-- Called one time at startup by master, initializes the goGuiThread instance as master
+*		shutdownMaster()								-- Called when the master is shutting down, it sends out messages to any slaves, and frees resources
+*		launchSlaveProcess()							-- Called to launch a slave process using the GuiThread command line protocols
 *
-* Usage (these parameters: tnHwnd, tnMsg, tnValue, tnExtra):
-*		mth_send_message
 *
-* Usage (all the below use these parameters: tnValue, tnExtra, tcIdentifier, tcCommand):
-*		on_execute_command							- When a message comes in from the remote to execute a command
-*		on_execute_command_return_result			- When a message comes in from the remote to execute a command and return a result
-*		on_general_message							- When a general message comes from the remote
-*		on_response									- When a response to a previous mth_execute_command_return_result() was issued
+*	Usage by Slave only:
+*		initializeSlave()								-- Called one time at startup by slave, initializes the goGuiThread instance as slave
+*		shutdownSlave()									-- Called when the slave is shutting down, it sends out messages to master, and frees resources
+*
+*
+***********
+* Usage by both Master and Slave:
+*
+*	Methods:
+*		mth_execute_remote_command()					-- Called to execute a command remotely
+*		mth_execute_remote_command_return_result()		-- Called to execute a command remotely, and return a result
+*		mth_send_general_message()						-- Called to send a general text message, and two integers, to the remote
+*		mth_send_result()								-- Called to send a result back to the remote
+*		mth_send_simple_message()						-- Called to send a simple message of two integers to the remote
+*
+*	Events:
+*		on_execute_command()							-- When the remote has a command for us to execute, it is sent here
+*		on_execute_command_return_result()				-- When the remote has a command for us to execute, and it expects a result to be sent back, it is sent here
+*		on_general_message()							-- When the remote has sent us a general message with a text message and two integers, it is sent here
+*		on_result()										-- When the remote has sent us a result, it is sent here
+*		on_simple_message()								-- When the remote has sent us a simple message with two integers, it is sent here
+*
+*
+**********
+* Default handlers:
+*
+*	Events slave will see:
+*		on_master_says_position_yourself()				-- Called when the master has sent a message for slave to position itself at an X,Y coordinate
+*		on_master_says_self_terminate()					-- Called when the master wants slave to shut down
+*
+*	Events master will see:
+*		on_slave_says_hwnd()							-- Initial callback after slave is up-and-running, telling us its bound hwnd
+*		on_slave_says_percent_completed()				-- Slave is sending a message including a percent completed
+*		on_slave_says_exiting()							-- Slave is sending a message that it is exiting (terminating)
 *
 **********
 	
 
 
 
-DEFINE CLASS MultiThreadHandler AS Session
+DEFINE CLASS GuiThreadHandler AS Session
 	**********
 	* This holds the location of the dll for this application
 	*****
@@ -63,7 +108,7 @@ DEFINE CLASS MultiThreadHandler AS Session
 	**********
 	* These custom messages are referenced by both (can be any number 1024 or higher)
 	* They are created here instead of constants so it's realized what they relate to.
-	* Use as "goMultiThread.nMessageHwnd" for example
+	* Use as "goGuiThread.nMessageHwnd" for example
 	*****
 		nMessageHwnd							= 2000
 		nMessagePercentCompleted				= 2001
@@ -101,9 +146,12 @@ DEFINE CLASS MultiThreadHandler AS Session
 		LPARAMETERS toForm, tlIsMaster
 		
 			**********
-			* Initialize the DLL interface
+			* Initialize the DLL interface.
+			* The DLL interfaces with its remote counterpart, creating some essential behind-the-scenes
+			* mechanisms to carry out the mechanics of fulfilling the requests exposed below by this API.
 			*****
-				* Used one time in either launchSlaveProcess() or initializeSlave(), returns hidden message hwnd used by the DLL
+				* Used one time in either launchSlaveProcess() or initializeSlave()
+				* Returns hidden message hwnd used by the DLL
 				DECLARE INTEGER		guithread_create_interface ;
 										IN (this.dll_name) ;
 										INTEGER	nFormHwnd, ;			&& The form's HWND for notifications that data has been sent through the pipe
@@ -111,24 +159,29 @@ DEFINE CLASS MultiThreadHandler AS Session
 										INTEGER	nIsMaster				&& 0=Slave, 1=Master
 				
 				* Used to shut down the interface if required (should be called when a process is terminated)
+				* Returns -1 if the identified hwnds are unknown, 0 otherwise.
 				DECLARE INTEGER		guithread_delete_interface ;
 										IN (this.dll_name) ;
 										INTEGER	nGuiThreadDllHwnd, ;	&& The return value from the initial guithread_create_interface() function
 										INTEGER	nFormHwnd ;				&& The form's HWND for notifications that data has been sent through the pipe
 				
 				* Called twice, once to find out how long the message is, the second time to actually retrieve the message
+				* Returns the length of bytes to copy if nMessageLength = 0, or the number of bytes copied if nMessageLength > 0.
+				* The message is auto-deleted once all bytes are read.
+				* Subsequent calls to a partially read message retrieves the entire message.
 				DECLARE INTEGER		guithread_get_message ;
 										IN (this.dll_name) ;
 										INTEGER	nIdentifier, ;			&& The identifier conveyed for the message
 										STRING@	cMessage, ;				&& Retrieve the message
 										INTEGER	nMessageLength			&& Space reserved in cMessage to retrieve the content
 				
-				* Called once to send a message 
+				* Called to send a message.  If cMessage is NULL, then a simple message is sent with only nValue and nExtra
+				* being used (nIdentifier is ignored, as is nMessageLength).
 				DECLARE INTEGER		guithread_send_message ;
 										IN (this.dll_name) ;
 										INTEGER	nFormHwnd, ;			&& The hwnd to notify after the message is sent
 										INTEGER	nIdentifier, ;			&& The identifier to convey for this message
-										STRING@	cMessage, ;				&& Retrieve the message
+										STRING	cMessage, ;				&& Retrieve the message
 										INTEGER	nMessageLength			&& Space reserved in cMessage to retrieve the content
 			
 			
@@ -138,10 +191,12 @@ DEFINE CLASS MultiThreadHandler AS Session
 				IF TYPE("toForm") = "O" AND TYPE("toForm.class") = "C" AND LOWER(toForm.class) = "form" AND TYPE("tlIsMaster") = "L"
 					* We have correct information
 					IF tlIsMaster
-						this.initializeMaster(toForm)
+						this.initializeMaster(toForm)		&& We are the master
 					ELSE
-						this.initializeSlave(toForm)
+						this.initializeSlave(toForm)		&& We are the slave
 					ENDIF
+				*ELSE
+				* It can be initialized later if need be by manually calling Init()
 				ENDIF
 
 
@@ -189,9 +244,9 @@ DEFINE CLASS MultiThreadHandler AS Session
 			**********
 			* Bind to the hwnd events we want to listen to
 			*****
-				BINDEVENT(toForm.hwnd, this.nMessageHwnd,							this, "slaveSaysHwnd")
-				BINDEVENT(toForm.hwnd, this.nMessagePercentCompleted,				this, "slaveSaysPercentCompleted")
-				BINDEVENT(toForm.hwnd, this.nMessageExiting,						this, "slaveSaysExiting")
+				BINDEVENT(toForm.hwnd, this.nMessageHwnd,							this, "on_slave_says_hwnd")
+				BINDEVENT(toForm.hwnd, this.nMessagePercentCompleted,				this, "on_slave_says_percent_completed")
+				BINDEVENT(toForm.hwnd, this.nMessageExiting,						this, "on_slave_says_exiting")
 				BINDEVENT(toForm.hwnd, this.nMessageByIdentifier,					this, "imth_raw_incoming_guithread_dll_message")
 
 
@@ -206,7 +261,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 			* Disconnect the dll message window
 			*****
 				guithread_delete_interface(this.slave_dll_message_hwnd, this.slave_form_hwnd)
-		
 		
 			**********
 			* Unbind everything
@@ -243,7 +297,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 					tcStartupDirectory = FULLPATH(CURDIR())
 				ENDIF
 
-			
 			**********
 			* Find a slot for the new process in our master spawned array
 			*****
@@ -277,7 +330,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 					ENDIF
 				NEXT
 			
-			
 			**********
 			* Check for success or failure thus far
 			*****
@@ -286,7 +338,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 					RETURN 0
 				ENDIF
 			
-			
 			**********
 			* Attempt to launch the process
 			*****
@@ -294,130 +345,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 				&lcArray[lnI, this._LAUNCHED_OK] = CreateProcess(tcExecutable, tcCmdLine, tcStartupDirectory, IIF(tlHideWindowOnLaunch, 0, 1))
 				* Indicate success or failure based on return code
 				RETURN &lcArray[lnI, this._LAUNCHED_OK]
-
-
-
-
-	**********
-	* Initial callback from the slave app to tell us its hwnd and id
-	*	tnW = slave's hwnd
-	*	tnL = slave id
-	*****
-		PROCEDURE slaveSaysHwnd
-		LPARAMETERS tnHwnd, tnMsg, tnW, tnL
-		LOCAL lnI, lcArray
-		
-			**********
-			* Find the indicated slot for the process that's checking in
-			*****
-				lcArray = this.cMasterArrayName
-				FOR lnI = 1 TO this.nMaxProcessesToSpawn
-					IF &lcArray[lnI, this._USED] AND &lcArray[lnI, this._ID] = tnL
-						* It is this entry
-						&lcArray[lnI, this._REMOTE_HWND]		= tnW
-						* Indicate success
-						RETURN .t.
-					ENDIF
-				NEXT
-				* Indicate failure
-				RETURN .f.
-	
-	
-
-
-	**********
-	* Periodic callback to give this app a message about percent completed
-	* They indicate a percent completed (tnW is integer portion, tnL is decimal portion)
-	*****
-		PROCEDURE slaveSaysPercentCompleted
-		LPARAMETERS tnHwnd, tnMsg, tnW, tnL
-		LOCAL lnI, lcArray
-		
-			**********
-			* Find the indicated slot for the process that's checking in
-			*****
-				lcArray = this.cMasterArrayName
-				FOR lnI = 1 TO this.nMaxProcessesToSpawn
-					IF &lcArray[lnI, this._USED] AND &lcArray[lnI, this._ID] = tnW
-						* It is this entry
-						&lcArray[lnI, this._PERCENT] = tnL
-						* Indicate success
-						RETURN .t.
-					ENDIF
-				NEXT
-				* Indicate failure
-				RETURN .f.
-
-	
-
-
-	**********
-	* Callback when the slave app is exiting
-	*****
-		PROCEDURE slaveSaysExiting
-		LPARAMETERS tnHwnd, tnMsg, tnW, tnL
-		LOCAL lnI, lcArray
-		
-			**********
-			* They're exiting, find its slot and remove it from our master array's list of used entries
-			*****
-				lcArray = this.cMasterArrayName
-				FOR lnI = 1 TO this.nMaxProcessesToSpawn
-					IF &lcArray[lnI, this._USED] AND &lcArray[lnI, this._ID] = tnW
-					
-						**********
-						* This was the ntry that was used
-						*****
-							&lcArray[lnI, this._USED]				= .f.
-							&lcArray[lnI, this._TERMINATION_CODE]	= tnL
-		
-						**********
-						* Disconnect the dll message window
-						*****
-							guithread_delete_interface(&lcArray[lnI, this._DLL_MESSAGE_HWND], &lcArray[lnI, this._FORM_HWND])
-						
-						* Indicate success
-						RETURN .t.
-					ENDIF
-				NEXT
-				* Indicate failure
-				RETURN .f.
-
-
-
-
-	**********
-	* Callback when the slave wants us to execute a command
-	*****
-		PROCEDURE slaveSaysExecuteCommand
-		LPARAMETERS tnHwnd, tnMsg, tnIdentifier, tnL
-
-
-
-
-	**********
-	* Callback when the slave wants us to execute a command and explicitly return the command
-	*****
-		PROCEDURE slaveSaysExecuteCommandReturnResult
-		LPARAMETERS tnHwnd, tnMsg, tnIdentifier, tnL
-
-
-
-
-	**********
-	* Callback when the slave has sent us a general message
-	*****
-		PROCEDURE slaveSentGeneralMessage
-		LPARAMETERS tnHwnd, tnMsg, tnIdentifier, tnL
-
-
-
-
-	**********
-	* Callback when the slave has sent us a response to a prior request to execute a command and return the result
-	*****
-		PROCEDURE slaveSentResponse
-		LPARAMETERS tnHwnd, tnMsg, tnIdentifier, tnL
 
 
 
@@ -435,12 +362,11 @@ DEFINE CLASS MultiThreadHandler AS Session
 				this.slave_form_hwnd		= toForm.hwnd
 				this.slave_dll_message_hwnd = guithread_create_interface(toForm, tcPipeName, 0)
 		
-		
 			**********
 			* Bind to the hwnd events we want to listen to
 			*****
-				BINDEVENT(toForm.hwnd, this.nMessagePositionYourself,				this, "masterSaysPositionYourself")
-				BINDEVENT(toForm.hwnd, this.nMessageSelfTerminate,					this, "masterSaysSelfTerminate")
+				BINDEVENT(toForm.hwnd, this.nMessagePositionYourself,				this, "on_master_says_position_yourself")
+				BINDEVENT(toForm.hwnd, this.nMessageSelfTerminate,					this, "on_master_says_self_terminate")
 				BINDEVENT(toForm.hwnd, this.nMessageByIdentifier,					this, "imth_raw_incoming_guithread_dll_message")
 
 
@@ -456,107 +382,10 @@ DEFINE CLASS MultiThreadHandler AS Session
 			*****
 				guithread_delete_interface(this.slave_dll_message_hwnd, this.slave_form_hwnd)
 
-
 			**********
 			* Unbind everything
 			*****
 				UNBINDEVENTS(0)
-
-	
-
-
-	**********
-	* Callback from master to position the slave at coordinates
-	*****
-		PROCEDURE masterSaysPositionYourself
-		LPARAMETERS tnHwnd, tnMsg, tnW, tnL
-		LOCAL lnI, lcArray
-		
-			**********
-			* The coordinate they give (tnW=X,tnL=Y) is the center of where they want the window positioned
-			*****
-				IF _screen.forms(1).left != tnW
-					_screen.forms(1).left = tnW - (_screen.Forms(1).Width / 2)
-				ENDIF
-				IF _screen.forms(1).top != tnL
-					_screen.forms(1).top = tnL - (_screen.Forms(1).Height / 2)
-				ENDIF
-				IF NOT _screen.Forms(1).visible
-					_screen.Forms(1).visible = .t.
-				ENDIF
-
-	
-
-
-	**********
-	* Callback from master to have the slave self-terminate
-	*****
-		PROCEDURE masterSaysSelfTerminate
-		LPARAMETERS tnHwnd, tnMsg, tnW, tnL
-		LOCAL lnI, lcArray
-		
-			**********
-			* Tell the master we're shutting down
-			*****
-				this.imth_send_message(this.slave_dll_message_hwnd, this.nMessageExiting, tnW, tnL)
-		
-		
-			**********
-			* Shut down
-			*****
-				this.shutdownSlave
-				_screen.forms(1).Release
-				CLEAR EVENTS
-
-
-
-
-	**********
-	* Internal common method for sending messages from here (the local) to there (the remote) through the guithreaddll
-	*****
-		HIDDEN PROCEDURE imth_send_guithread_message
-		LPARAMETERS tcOperation, tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster
-		LOCAL lnI, lcArray, lnFormHwnd, lnSlaveDllMessageHwnd, lcMessage
-		
-			**********
-			* Prepare the message to transmit through guithread.dll
-			*****
-				lcMessage		= tcOperation
-				lcMessage		= lcMessage + tcIdentifier + CHR(13)
-				lcMessage		= lcMessage + TRANSFORM(tnValue) + CHR(13)
-				lcMessage		= lcMessage + TRANSFORM(tnExtra) + CHR(13)
-				lcMessage		= lcMessage + tcCommand
-
-
-			**********
-			* Make sure the slot is indicated, or we're sending as a slave
-			*****
-				* Is it the slave?
-				IF TYPE("tnSlotOfMaster") = "L"
-					* It's the slave
-					lnFormHwnd				= this.slave_form_hwnd
-					lnSlaveDllMessageHwnd	= this.slave_dll_message_hwnd
-				ENDIF
-				
-				* Is it the master?
-				IF TYPE("tnSlotOfMaster") = "N" AND tnSlotOfMaster <= this.nMaxProcessesToSpawn
-					* It's the master, locate the slot
-					lcArray					= this.cMasterArrayName
-					lnFormHwnd				= &lcArray[tnSlotOfMaster, this._FORM_HWND]
-					lnSlaveDllMessageHwnd	= &lcArray[tnSlotOfMaster, this._DLL_MESSAGE_HWND]
-				
-				ELSE
-					* Nope.  It's an improper thing that's happening here.
-					* It makes us sad, but we can deal with it.
-					RETURN .f.
-				ENDIF
-			
-			
-			**********
-			* Send it
-			*****
-				guithread_send_message(lnFormHwnd, lnSlaveDllMessageHwnd, tcMessage, LEN(tcMessage))
-				RETURN .t.
 
 
 
@@ -576,7 +405,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 					lcMessage = SPACE(lnLength)
 					guithread_get_message(tnIdentifier, @lcMessage, LEN(lcMessage))
 				
-				
 					**********
 					* Parse the message text
 					*****
@@ -594,7 +422,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 								lnValue			= VAL(laLines[3])
 								lnExtra			= VAL(laLines[4])
 							
-							
 							**********
 							* Grab the actual command
 							*****
@@ -602,7 +429,6 @@ DEFINE CLASS MultiThreadHandler AS Session
 								FOR lnI = 5 TO ALEN(laLines, 1)
 									lcCommand = laLines[lnI] + IIF(lnI < ALEN(laLines, 1), CHR(13), SPACE(0))
 								NEXT
-							
 							
 							**********
 							* Spawn the appropriate event
@@ -627,6 +453,54 @@ DEFINE CLASS MultiThreadHandler AS Session
 
 
 
+	**********
+	* Internal common method for sending messages from here (the local) to there (the remote) through the guithreaddll
+	*****
+		HIDDEN PROCEDURE imth_send_guithread_message
+		LPARAMETERS tcOperation, tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster
+		LOCAL lnI, lcArray, lnFormHwnd, lnSlaveDllMessageHwnd, lcMessage
+		
+			**********
+			* Prepare the message to transmit through guithread.dll
+			*****
+				lcMessage		= tcOperation
+				lcMessage		= lcMessage + tcIdentifier + CHR(13)
+				lcMessage		= lcMessage + TRANSFORM(tnValue) + CHR(13)
+				lcMessage		= lcMessage + TRANSFORM(tnExtra) + CHR(13)
+				lcMessage		= lcMessage + tcCommand
+
+			**********
+			* Make sure the slot is indicated, or we're sending as a slave
+			*****
+				* Is it the slave?
+				IF TYPE("tnSlotOfMaster") = "L"
+					* It's the slave
+					lnFormHwnd				= this.slave_form_hwnd
+					lnSlaveDllMessageHwnd	= this.slave_dll_message_hwnd
+				ENDIF
+				
+				* Is it the master?
+				IF TYPE("tnSlotOfMaster") = "N" AND tnSlotOfMaster <= this.nMaxProcessesToSpawn
+					* It's the master, locate the slot
+					lcArray					= this.cMasterArrayName
+					lnFormHwnd				= &lcArray[tnSlotOfMaster, this._FORM_HWND]
+					lnSlaveDllMessageHwnd	= &lcArray[tnSlotOfMaster, this._DLL_MESSAGE_HWND]
+				
+				ELSE
+					* Nope.  It's an improper thing that's happening here.
+					* It makes us sad, but we can deal with it.
+					RETURN .f.
+				ENDIF
+			
+			**********
+			* Send it
+			*****
+				guithread_send_message(lnFormHwnd, lnSlaveDllMessageHwnd, tcMessage, LEN(tcMessage))
+				RETURN .t.
+
+
+
+
 ********************
 *
 * E V E N T S
@@ -638,28 +512,35 @@ DEFINE CLASS MultiThreadHandler AS Session
 		* The remote wants us to execute a command
 		*****
 			PROCEDURE on_execute_command
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcCommand
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcCommand
 		
 		
 		**********
 		* The remote wants us to execute a command, and then return the result using the identifier
 		*****
 			PROCEDURE on_execute_command_return_result
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcCommand
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcCommand
 		
 		
 		**********
 		* The remote has sent us a general message
 		*****
 			PROCEDURE on_general_message
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcMessage
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcMessage
 		
 		
 		**********
-		* The remote has sent us a response to a prior comand
+		* The remote has sent us a result from a prior comand which needed to return a result
 		*****
-			PROCEDURE on_response
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcResponse
+			PROCEDURE on_result
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcResponse
+		
+		
+		**********
+		* The remote has sent us a simple message
+		*****
+			PROCEDURE on_simple_message
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier
 		*
 		*
 *********
@@ -682,43 +563,40 @@ DEFINE CLASS MultiThreadHandler AS Session
 		* We want the remote to execute a command
 		*****
 			PROCEDURE mth_execute_remote_command
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster
-				imth_send_guithread_message("execute_command", tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster)
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcCommand
+				imth_send_guithread_message(tnRemoteId, "execute_command", tnValue, tnExtra, tcIdentifier, tcCommand)
 		
 		
 		**********
 		* We want the remote to execute a command, and return us a result
 		*****
 			PROCEDURE mth_execute_remote_command_return_result
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcCommand
-				imth_send_guithread_message("execute_command_return_result", tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster)
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcCommand
+				imth_send_guithread_message(tnRemoteId, "execute_command_return_result", tnValue, tnExtra, tcIdentifier, tcCommand)
 		
 		
 		**********
 		* We want to send the remote a general message
 		*****
 			PROCEDURE mth_send_general_message
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcCommand
-				imth_send_guithread_message("general_message", tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster)
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcCommand
+				imth_send_guithread_message(tnRemoteId, "general_message", tnValue, tnExtra, tcIdentifier, tcCommand)
 		
 		
 		**********
-		* We want to send the remote a response
+		* We want to send the remote a result response
 		*****
-			PROCEDURE mth_send_response
-			LPARAMETERS tnValue, tnExtra, tcIdentifier, tcCommand
-				imth_send_guithread_message("response", tnValue, tnExtra, tcIdentifier, tcCommand, tnSlotOfMaster)
+			PROCEDURE mth_send_result
+			LPARAMETERS tnRemoteId, tnValue, tnExtra, tcIdentifier, tcCommand
+				imth_send_guithread_message(tnRemoteId, "response", tnValue, tnExtra, tcIdentifier, tcCommand)
 	
 	
 		**********
-		* Send a message to a remote hwnd
+		* Send a simple message to a remote hwnd
 		*****
-			PROCEDURE mth_send_message
-			LPARAMETERS tnHwnd, tnMsg, tnValue, tnExtra
-			LOCAL lnResult
-				DECLARE INTEGER SendMessage IN WIN32API AS SendMessageMultiThread INTEGER hwnd, INTEGER msg, INTEGER w, INTEGER l
-				lnResult = SendMessageMultiThread(tnHwnd, tnMsg, tnValue, tnExtra)
-				CLEAR DLLS SendMessageMultiThread
+			PROCEDURE mth_send_simple_message
+			LPARAMETERS tnRemoteId, tnHwnd, tnMsg, tnValue, tnExtra
+				imth_send_guithread_message(tnRemoteId, "simple_message", tnValue, tnExtra, tcIdentifier)
 		*
 		*
 *********
@@ -726,8 +604,174 @@ DEFINE CLASS MultiThreadHandler AS Session
 * M E T H O D S
 *
 ********************
-	
-	
+
+
+
+
+
+
+
+
+
+********************
+*
+* DEFAULT:
+* C A L L B A C K      E V E N T S      F O R      S L A V E
+*
+*********
+		*
+		*
+		**********
+		* Callback from master to have the slave self-terminate
+		*****
+			PROCEDURE on_master_says_self_terminate
+			LPARAMETERS tnHwnd, tnMsg, tnW, tnL
+			LOCAL lnI, lcArray
+			
+				**********
+				* Tell the master we're shutting down by sending back their two values (tnW, tnL)
+				*****
+					this.imth_send_message(this.slave_dll_message_hwnd, this.nMessageExiting, tnW, tnL)
+						
+				**********
+				* Shut down
+				*****
+					this.shutdownSlave
+					_screen.forms(1).Release
+					CLEAR EVENTS
+
+
+		**********
+		* Callback from master to position the slave at coordinates
+		*****
+			PROCEDURE on_master_says_position_yourself
+			LPARAMETERS tnHwnd, tnMsg, tnX, tnY
+			LOCAL lnI, lcArray
+			
+				**********
+				* The coordinate they give (tnW=X,tnL=Y) is the center of where they want the window positioned
+				*****
+					IF _screen.forms(1).left != tn
+						_screen.forms(1).left = tnX - (_screen.Forms(1).Width / 2)
+					ENDIF
+					IF _screen.forms(1).top != tnY
+						_screen.forms(1).top = tnY - (_screen.Forms(1).Height / 2)
+					ENDIF
+					IF NOT _screen.Forms(1).visible
+						_screen.Forms(1).visible = .t.
+					ENDIF
+		*
+		*
+*********
+*
+* C A L L B A C K      E V E N T S      F O R      S L A V E
+*
+********************
+
+
+
+
+
+
+
+
+
+********************
+*
+* DEFAULT:
+* C A L L B A C K      E V E N T S      F O R      M A S T E R
+*
+*********
+		*
+		*
+		**********
+		* Initial callback from the slave app to tell us its hwnd and id
+		*	tnW = slave's hwnd
+		*	tnL = slave id
+		*****
+			PROCEDURE on_slave_says_hwnd
+			LPARAMETERS tnHwnd, tnMsg, tnRemoteHwnd, tnId
+			LOCAL lnI, lcArray
+			
+				**********
+				* Find the indicated slot for the process that's checking in
+				*****
+					lcArray = this.cMasterArrayName
+					FOR lnI = 1 TO this.nMaxProcessesToSpawn
+						IF &lcArray[lnI, this._USED] AND &lcArray[lnI, this._ID] = tnId
+							* It is this entry
+							&lcArray[lnI, this._REMOTE_HWND] = tnRemoteHwnd
+							* Indicate success
+							RETURN .t.
+						ENDIF
+					NEXT
+					* Indicate failure
+					RETURN .f.
+		
+		
+		**********
+		* Periodic callback to give this app a message about percent completed
+		* They indicate a percent completed (tnW is integer portion, tnL is decimal portion)
+		*****
+			PROCEDURE on_slave_says_percent_completed
+			LPARAMETERS tnHwnd, tnMsg, tnId, tnPercent
+			LOCAL lnI, lcArray
+			
+				**********
+				* Find the indicated slot for the process that's checking in
+				*****
+					lcArray = this.cMasterArrayName
+					FOR lnI = 1 TO this.nMaxProcessesToSpawn
+						IF &lcArray[lnI, this._USED] AND &lcArray[lnI, this._ID] = tnId
+							* It is this entry
+							&lcArray[lnI, this._PERCENT] = tnPercent
+							* Indicate success
+							RETURN .t.
+						ENDIF
+					NEXT
+					* Indicate failure
+					RETURN .f.
+
+		
+		**********
+		* Callback when the slave app is exiting
+		*****
+			PROCEDURE on_slave_says_exiting
+			LPARAMETERS tnHwnd, tnMsg, tnId, tnTerminationCode
+			LOCAL lnI, lcArray
+			
+				**********
+				* They're exiting, find its slot and remove it from our master array's list of used entries
+				*****
+					lcArray = this.cMasterArrayName
+					FOR lnI = 1 TO this.nMaxProcessesToSpawn
+						IF &lcArray[lnI, this._USED] AND &lcArray[lnI, this._ID] = tnId
+						
+							**********
+							* This was the ntry that was used
+							*****
+								&lcArray[lnI, this._USED]				= .f.
+								&lcArray[lnI, this._TERMINATION_CODE]	= tnTerminationCode
+			
+							**********
+							* Disconnect the dll message window
+							*****
+								guithread_delete_interface(&lcArray[lnI, this._DLL_MESSAGE_HWND], &lcArray[lnI, this._FORM_HWND])
+							
+							* Indicate success
+							RETURN .t.
+						ENDIF
+					NEXT
+					* Indicate failure
+					RETURN .f.
+
+		*
+		*
+*********
+*
+* C A L L B A C K      E V E N T S      F O R      M A S T E R
+*
+********************
 ENDDEFINE
 
 
