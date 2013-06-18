@@ -151,19 +151,24 @@ DEFINE CLASS GuiThreadHandler AS Session
 			* mechanisms to carry out the mechanics of fulfilling the requests exposed below by this API.
 			*****
 				* Used one time in either launchSlaveProcess() or initializeSlave()
-				* Returns hidden message hwnd used by the DLL
+				* Returns the nInterfaceId used by the DLL
 				DECLARE INTEGER		guithread_create_interface ;
 										IN (this.dll_name) ;
 										INTEGER	nFormHwnd, ;			&& The form's HWND for notifications that data has been sent through the pipe
-										STRING@	cPipeName, ;			&& Specify the pipe name
+										STRING	cPipeName, ;			&& Specify a unique name for the data pipe
 										INTEGER	nIsMaster				&& 0=Slave, 1=Master
+
+				* Launches an application and uses the specified nInterfaceId
+				DECLARE INTEGER		guithread_launch_remote_using_interface ;
+										IN (this.dll_name) ;
+										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
+										STRING	cCommandLine			&& "c:\path\to\myapp.exe myparam1 myparam2"
 				
 				* Used to shut down the interface if required (should be called when a process is terminated)
 				* Returns -1 if the identified hwnds are unknown, 0 otherwise.
 				DECLARE INTEGER		guithread_delete_interface ;
 										IN (this.dll_name) ;
-										INTEGER	nGuiThreadDllHwnd, ;	&& The return value from the initial guithread_create_interface() function
-										INTEGER	nFormHwnd ;				&& The form's HWND for notifications that data has been sent through the pipe
+										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
 				
 				* Called twice, once to find out how long the message is, the second time to actually retrieve the message
 				* Returns the length of bytes to copy if nMessageLength = 0, or the number of bytes copied if nMessageLength > 0.
@@ -171,7 +176,8 @@ DEFINE CLASS GuiThreadHandler AS Session
 				* Subsequent calls to a partially read message retrieves the entire message.
 				DECLARE INTEGER		guithread_get_message ;
 										IN (this.dll_name) ;
-										INTEGER	nIdentifier, ;			&& The identifier conveyed for the message
+										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
+										INTEGER	nIdentifier, ;			&& The message's unique identifier
 										STRING@	cMessage, ;				&& Retrieve the message
 										INTEGER	nMessageLength			&& Space reserved in cMessage to retrieve the content
 				
@@ -179,10 +185,18 @@ DEFINE CLASS GuiThreadHandler AS Session
 				* being used (nIdentifier is ignored, as is nMessageLength).
 				DECLARE INTEGER		guithread_send_message ;
 										IN (this.dll_name) ;
-										INTEGER	nFormHwnd, ;			&& The hwnd to notify after the message is sent
-										INTEGER	nIdentifier, ;			&& The identifier to convey for this message
+										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
+										INTEGER	nIdentifier, ;			&& The unique identifier to convey for this message
 										STRING	cMessage, ;				&& Retrieve the message
 										INTEGER	nMessageLength			&& Space reserved in cMessage to retrieve the content
+				
+				* Used to show or hide a form's window on the taskbar (useful for creating
+				* background windows that do not "consume" taskbar space, but are used for
+				* conveying messages).
+				DECLARE INTEGER		guithread_hwnd_on_taskbar ;
+										IN (this.dll_name) ;
+										INTEGER	nHwnd, ;				&& The thisForm.hwnd to hide from the taskbar
+										INTEGER	nShow					&& 0=hide, !0=show
 			
 			
 			**********

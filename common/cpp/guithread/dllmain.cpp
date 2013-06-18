@@ -1,4 +1,6 @@
 // dllmain.cpp : Defines the entry point for the DLL application.
+#define _isExtern extern
+#define _initialize(...)
 #include "stdafx.h"
 
 BOOL APIENTRY DllMain( HMODULE hModule,
@@ -9,6 +11,14 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 	switch (ul_reason_for_call)
 	{
 	case DLL_PROCESS_ATTACH:
+		InitializeCriticalSection(&gsemUniqueIdAccess);
+		if (!gsInterfaceSelf)
+		{
+			iigt_createNewSInterface(&gsInterfaceSelf);
+			gsInterfaceSelf->isRunning = true;
+		}
+
+		break;
 	case DLL_THREAD_ATTACH:
 	case DLL_THREAD_DETACH:
 	case DLL_PROCESS_DETACH:

@@ -48,3 +48,27 @@
 	typedef double						f64;
 	typedef const float					cf32;
 	typedef const double				cf64;
+
+
+//////////
+// Strings
+//////
+	const u8 cgcGuiThreadMessageWindowClassName[]		= "guithreadMessageWindow";
+	const u8 cgcUpAndRunning[]							= "upandrunning";
+
+
+//////////
+// Constants
+//////
+	const u32 _PIPE_OUT_BUFFER_SIZE						= 16 * 1024000;			// 16MB
+	const u32 _PIPE_IN_BUFFER_SIZE						= 16 * 1024000;			// 16MB
+
+
+//////////
+// Internal user window messages
+//////
+	const u32 WMGT_DATA_IN_PIPE							= WM_USER + 1;
+	const u32 WMGT_BURN_DATA_IN_PIPE					= WM_USER + 2;
+
+	const u32 WMGT_PARCEL_DELIVERY						= WM_USER + 100;
+	const u32 WMGT_PARCEL_DELIVERY_FAILURE				= WM_USER + 101;

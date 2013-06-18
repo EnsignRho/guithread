@@ -1,0 +1,9 @@
+LIBRARY	"guithread"
+
+EXPORTS
+
+	guithread_create_interface
+	guithread_delete_interface
+	guithread_get_message
+	guithread_send_message
+	guithread_hwnd_on_taskbar
