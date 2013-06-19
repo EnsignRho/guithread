@@ -55,6 +55,7 @@
 //////
 	const u8 cgcGuiThreadMessageWindowClassName[]		= "guithreadMessageWindow";
 	const u8 cgcUpAndRunning[]							= "upandrunning";
+	const u8 cgcRemoteMessageHwnd[]						= "remotemessagehwnd";
 
 
 //////////

@@ -112,6 +112,38 @@ _asm int 3;
 
 //////////
 //
+// Called by the launched remote process to reconnect with the local process
+//
+//////
+	u32 guithread_connect_as_remote_using_interface(u32 tnInterfaceId, u32 tnRemoteHwnd)
+	{
+		u32				lnResult;
+		SInterface*		li;
+
+
+		// Make sure our environment is sane
+		lnResult = -1;
+
+		// Create a new process
+		li = iigt_FindSInterface(&gsInterfaces, tnInterfaceId);
+		if (li)
+		{
+			// Store the remote message hwnd
+			li->hwndRemoteMessage = tnRemoteHwnd;
+
+			// Send the up and running message to inform the remote process of our message hwnd
+			iigt_sendMessageViaPipe(li, NULL, li->hwndLocalMessage, 0, (u8*)cgcUpAndRunning, sizeof(cgcUpAndRunning) - 1, NULL, 0);
+		}
+
+		// Indicate our status
+		return(lnResult);
+	}
+
+
+
+
+//////////
+//
 // Called to delete a previously created interface.
 // Used to shut down the interface if required (should be called when a process is terminated)
 //
@@ -176,11 +208,12 @@ _asm int 3;
 // Called twice, once to find out how long the message is, the second time to actually retrieve the message
 //
 //////
-	u32 guithread_get_message(u32 tnInterfaceId, u32 tnIdentifier, u8* tcMessage, u32 tnMessageLength)
+	u32 guithread_get_message(u32 tnInterfaceId, u32 tnIdentifier, u8* tcMesageType100, u8* tcValue16, u8* tcExtra16, u8* tcMessage, u32 tnMessageLength)
 	{
-		u32				lnLength;
-		SParcel*		mail;
-		SInterface*		li;
+		u32					lnLength;
+		SParcel*			mail;
+		SInterface*			li;
+		SParcelDelivery*	lpd;
 
 
 		// Find our interface
@@ -189,15 +222,33 @@ _asm int 3;
 		if (li)
 		{
 			// Grab our mail
-			mail = iigt_findMailInInterface(li, tnIdentifier);
+			iigt_findMailInInterface(li, tnIdentifier, &mail, &lpd);
 			if (mail && mail->data)
 			{
-				// Copy it
+				// Copy the message portion
 				if (tcMessage && tnMessageLength != 0)
 					iigt_copyToShortestStringLength(tcMessage, tnMessageLength, mail->data, mail->dataLength, false, false, 0);
 
 				// Grab the length for return
 				lnLength = mail->dataLength;
+
+				// Initialize the fixed values
+				memset(tcMesageType100, 32,	100);
+				memset(tcValue16,		32,	16);
+				memset(tcExtra16,		32,	16);
+
+				// If it was a valid parcel delivery, then store the additional information
+				if (lpd)
+				{
+					// Copy as much as will fit
+					iigt_copyToShortestStringLength(tcMesageType100, 100, (u8*)lpd + sizeof(SParcelDelivery), lpd->messageTypeLength, false, false, 0);
+
+					// Value
+					sprintf_s((s8*)tcValue16, 16, "%u", lpd->nValue);
+
+					// Extra
+					sprintf_s((s8*)tcExtra16, 16, "%u", lpd->nExtra);
+				}
 
 				// Delete it if we copied it
 				if (tnMessageLength >= mail->dataLength)
@@ -227,7 +278,7 @@ _asm int 3;
 		if (li)
 		{
 			// Indicate number of bytes written
-			return(iigt_sendMessageViaPipe(li, tnValue, tnExtra, tcMessageType, tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength));
+			return(iigt_sendMessageViaPipe(li, NULL, tnValue, tnExtra, tcMessageType, tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength));
 
 		} else {
 			// Failure
@@ -726,118 +777,6 @@ _asm int 3;
 
 //////////
 //
-// Called to send a message via a named pipe
-//
-//////
-	u32 iigt_sendMessageViaPipe(SInterface* ti, u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength)
-	{
-		u32					lnNumwritten;
-		SParcelDelivery*	lpd;
-
-
-		//////////
-		// Prepare the parcel delivery message
-		//////
-			lpd = iigt_createParcelDelivery(tnValue, tnExtra, tcMessageType, tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength);
-			if (!lpd)
-				return(-1);	// Failure
-
-
-		//////////
-		// Write data to pipe
-		//////
-			if (ti->hwndRemoteMessage != 0)
-			{
-				lnNumwritten = iigt_writeToPipe(ti, (u8*)&lpd, lpd->totalMessageLength);
-				if (lnNumwritten == lpd->totalMessageLength)
-				{
-					// We're good, there's a valid message in the pipe
-					SendMessage((HWND)ti->hwndRemoteMessage, WMGT_PARCEL_DELIVERY, lnNumwritten, 0);
-
-					// Indicate success
-					return(lnNumwritten);
-
-				} else {
-					// Failure
-					if (lnNumwritten != 0)
-					{
-						// We need to burn the data in the pipe so it doesn't clog up the works
-						SendMessage((HWND)ti->hwndRemoteMessage, WMGT_PARCEL_DELIVERY_FAILURE, lnNumwritten, 0);
-					}
-				}
-			}
-			// Failure
-			return(-1);
-	}
-
-
-
-
-//////////
-//
-// Receives the text form of a message that is a general message to be conveyed unto the
-// bound machine.
-//
-//////
-	void iigt_receiveAndProcessMessage(SInterface* ti, u8* tcGeneralMessage, u32 tnGeneralMessageLength, u32 tnHwnd)
-	{
-		u32					lnMailId;
-		SParcel*			mail;
-		SParcelDelivery*	lpd;
-
-
-		// Make sure our environment is sane
-		lnMailId = -1;
-		if (tnGeneralMessageLength >= sizeof(SParcelDelivery))
-		{
-			// See if it has the text
-			lpd = (SParcelDelivery*)tcGeneralMessage;
-			lpd->messageType	= tcGeneralMessage + lpd->totalMessageLength - lpd->contentLength - lpd->messageTypeLength;
-			lpd->content		= tcGeneralMessage + lpd->totalMessageLength - lpd->contentLength;
-
-
-			//////////
-			// Validate it's a valid message
-			//////
-				if (iigt_validateParcelDeliverySha1s(lpd))
-				{
-					// See if the message is an up-and-running, if so they have included their remote hwnd which we need
-					if (iigt_equalEqual(lpd->messageType, lpd->messageTypeLength, (u8*)cgcUpAndRunning, sizeof(cgcUpAndRunning) - 1))
-					{
-						// When they notify they're up and running, we have some additional information we need to update
-						ti->hwndRemoteMessage	= lpd->nExtra;		// They are reporting being up and running, store the hwnd
-						ti->isRunning			= true;
-					}
-
-					// Store the message locally
-					lnMailId = iigt_stowMail(gsInterfaceSelf, (u8*)lpd, lpd->totalMessageLength, &mail);
-
-					// If it was stored properly, post it, if not then delete it
-					if (lnMailId != -1)
-						PostMessage((HWND)ti->hwndBound, WMGT_PARCEL_DELIVERY, ti->interfaceId, lnMailId);
-				}
-
-
-			//////////
-			// When we get here, the message was either stored or not (we'll know by the lnMailId)
-			//////
-				if (lnMailId == -1)
-				{
-					// Store the message locally
-					lnMailId = iigt_stowMail(gsInterfaceSelf, (u8*)lpd, lpd->totalMessageLength, &mail);
-
-					// If it was stored properly, post it, if not then delete it
-					if (lnMailId != -1)
-						PostMessage((HWND)ti->hwndBound, WMGT_PARCEL_DELIVERY_FAILURE, ti->interfaceId, lnMailId);
-				}
-		}
-	}
-
-
-
-
-//////////
-//
 // Stow the message in the mailbag for retrieval by the remote process
 //
 //////
@@ -940,7 +879,14 @@ _asm int 3;
 //////
 	SParcel* iigt_findMail(u32 tnMailId)
 	{
-		return(iigt_findMailInInterface(gsInterfaceSelf, tnMailId));
+		SParcel* mail;
+
+
+		// Grab the message
+		iigt_findMailInInterface(gsInterfaceSelf, tnMailId, &mail, NULL);
+
+		// Indicate our result
+		return(mail);
 	}
 
 
@@ -952,29 +898,29 @@ _asm int 3;
 // Note:  We only search the indicated mailbag
 //
 //////
-	SParcel* iigt_findMailInInterface(SInterface* ti, u32 tnMailId)
+	void iigt_findMailInInterface(SInterface* ti, u32 tnMailId, SParcel** mail, SParcelDelivery** tpd)
 	{
-		SParcel* mail;
+		SParcelDelivery* lpd;
 
 
-		if (ti)
+		// Iterate through all parcels
+		*mail = ti->mailbag;
+		while (*mail)
 		{
-			// Iterate through all parcels
-			mail = ti->mailbag;
-			while (mail)
-			{
-				// See if this is our man
-				if (mail->mailId == tnMailId)
-					break;		// We found it
+			// See if this is our man
+			if ((*mail)->mailId == tnMailId)
+				break;		// We found it
 
-				// Move to next parcel
-				mail = mail->next;
-			}
-			// Indicate our status
-			return(mail);
+			// Move to next parcel
+			*mail = (*mail)->next;
 		}
-		// Not a valid process
-		return(NULL);
+
+		// See if this mail is a properly formed parcel delivery message
+		lpd = (SParcelDelivery*)(*mail);
+		if (tpd && iigt_validateParcelDeliverySha1s(lpd))
+			*tpd = lpd;
+
+		// All done
 	}
 
 
@@ -1142,6 +1088,271 @@ _asm int 3;
 
 //////////
 //
+// Called to find the specified label, and then locate the length of the label, the value start,
+// and the value length.  Content is expected in the form produced by iAppendLabelColonValueString()
+// and related functions, which is of the left-justified form:
+//
+//		|label1:value1[cr/lf]
+//		|label2:value2[cr/lf]
+//		|label3:value3[cr/lf][eof]
+//
+//////
+	bool iigt_findLine(u8* tcSource, u32 tnSourceLength, u8* tcLabelSearch, u32 tnLabelSearchLength, u8** tcLabelFound, u32* tnLabelFoundLength, u8** tcValueFound, u32* tnValueFoundLength)
+	{
+		u32	lnI, lnLabelFound, lnColonFound;
+
+
+		// Make sure our environment is sane
+		if (tcSource && tcLabelSearch && tcLabelFound && tcValueFound)
+		{
+			// Begin scanning line by line looking for the search label (case-insensitive)
+			for (lnI = 0; lnI < tnSourceLength - tnLabelSearchLength; )
+			{
+				////////]/
+				// Is this a match?
+				//////
+					if (_memicmp(tcSource + lnI, tcLabelSearch, tnLabelSearchLength) == 0)
+					{
+						//////////
+						// We found a match
+						//////
+							lnLabelFound = lnI;
+
+
+						//////////
+						// Find the colon
+						//////
+							for ( ; lnI < tnSourceLength && tcSource[lnI] != ':' && tcSource[lnI] != 13 && tcSource[lnI] != 10; )
+								++lnI;	// Scanning forward to find a colon, CR or LF
+
+							if (tcSource[lnI] == ':')
+							{
+								lnColonFound = lnI;
+
+
+								//////////
+								// Search for the end of line
+								//////
+									for ( ; lnI < tnSourceLength && tcSource[lnI] != 13 && tcSource[lnI] != 10; )
+										++lnI;	// Scanning forward to find a CR or LF
+
+								//////////
+								// Update our caller's pointers
+								//////
+									*tcLabelFound			= tcSource + lnLabelFound;
+									*tnLabelFoundLength		= lnColonFound - lnLabelFound;
+									*tcValueFound			= tcSource + lnColonFound + 1;
+									*tnValueFoundLength		= lnI - lnColonFound - 1;
+									// All done
+									return(true);
+							}
+							// If we get here, it wasn't found
+					}
+
+
+				//////////
+				// Look for end of line
+				//////
+					for ( ; lnI < tnSourceLength - tnLabelSearchLength && tcSource[lnI] != 13 && tcSource[lnI] != 10; )
+						++lnI;	// Scanning forward to find a CR or LF
+
+
+				//////////
+				// Continue while end of line characters
+				//////
+					for ( ; lnI < tnSourceLength - tnLabelSearchLength && (tcSource[lnI] == 13 || tcSource[lnI] == 10); )
+						++lnI;	// Scanning forward to find the first character after CR or LF
+
+				// When we get here, we're either at EOF or the start of the next line
+			}
+		}
+		// If we get here, not found
+		return(false);
+	}
+
+
+
+
+//////////
+//
+// Called to obtain the base-10 number from the pointer
+//
+//////
+	u32 iigt_get_u32(u8* tcNumber, bool tlSkipLeadingWhitespaces)
+	{
+		u32 lnI, lnValue;
+
+
+		// Make sure the environment is sane
+		lnValue = 0;
+		if (tcNumber)
+		{
+			// Are we to skip past any leading whitespaces?
+			lnI = 0;
+			if (tlSkipLeadingWhitespaces)
+			{
+				// Skip past leading whitespaces using the clunky syntax
+				for ( ; tcNumber[lnI] == 9 || tcNumber[lnI] == 32; )
+					lnI++;
+			}
+
+			// Iterate as long as there are numbers
+			for ( ; tcNumber[lnI] >= '0' && tcNumber[lnI] <= '9'; lnI++)
+			{
+				// Make room for this new 1s digit
+				lnValue	= lnValue * 10;
+
+				// Grab the 1s digit
+				lnValue	= lnValue + (u32)(tcNumber[lnI] - '0');
+			}
+			// When we get here, lnValue has been derived
+		}
+		// Return the number
+		return(lnValue);
+	}
+
+
+
+
+//////////
+//
+// Is the value in the range of the indicated low and high?
+//
+//////
+	bool iigt_isBetween(s32 tnValue, s32 tnLow, s32 tnHigh)
+	{
+		return(tnValue >= tnLow && tnValue <= tnHigh);
+	}
+
+
+
+
+//////////
+//
+// Called to send an already prepared, or a constructed message, via the named pipe
+//
+//////
+	u32 iigt_sendParcelDeliveryViaPipe(SInterface* ti, SParcelDelivery* tpd)
+	{
+		return(iigt_sendMessageViaPipe(ti, tpd, 0, 0, NULL, 0, NULL, 0));
+	}
+
+	u32 iigt_sendMessageViaPipe(SInterface* ti, SParcelDelivery* tpd, u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength)
+	{
+		u32					lnNumwritten;
+		SParcelDelivery*	lpd;
+
+
+		//////////
+		// Prepare the parcel delivery message
+		//////
+			if (tpd)
+			{
+				// Send the already prepared message
+				lpd = tpd;
+
+			} else {
+				// Prepare the message on-the-fly
+				lpd = iigt_createParcelDelivery(tnValue, tnExtra, tcMessageType, tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength);
+				if (!lpd)
+					return(-1);	// Failure
+			}
+
+		//////////
+		// Write data to pipe
+		//////
+			if (ti->hwndRemoteMessage != 0)
+			{
+				lnNumwritten = iigt_writeToPipe(ti, (u8*)&lpd, lpd->totalMessageLength);
+				if (lnNumwritten == lpd->totalMessageLength)
+				{
+					// We're good, there's a valid message in the pipe
+					SendMessage((HWND)ti->hwndRemoteMessage, WMGT_PARCEL_DELIVERY, lnNumwritten, 0);
+
+					// Indicate success
+					return(lnNumwritten);
+
+				} else {
+					// Failure
+					if (lnNumwritten != 0)
+					{
+						// We need to burn the data in the pipe so it doesn't clog up the works
+						SendMessage((HWND)ti->hwndRemoteMessage, WMGT_PARCEL_DELIVERY_FAILURE, lnNumwritten, 0);
+					}
+				}
+			}
+			// Failure
+			return(-1);
+	}
+
+
+
+
+//////////
+//
+// Receives the text form of a message that is a general message to be conveyed unto the
+// bound machine.
+//
+//////
+	void iigt_receiveAndProcessMessage(SInterface* ti, u8* tcGeneralMessage, u32 tnGeneralMessageLength, u32 tnHwnd)
+	{
+		u32					lnMailId;
+		SParcel*			mail;
+		SParcelDelivery*	lpd;
+
+
+		// Make sure our environment is sane
+		lnMailId = -1;
+		if (tnGeneralMessageLength >= sizeof(SParcelDelivery))
+		{
+			// See if it has the text
+			lpd = (SParcelDelivery*)tcGeneralMessage;
+			lpd->messageType	= tcGeneralMessage + lpd->totalMessageLength - lpd->contentLength - lpd->messageTypeLength;
+			lpd->content		= tcGeneralMessage + lpd->totalMessageLength - lpd->contentLength;
+
+
+			//////////
+			// Validate it's a valid message
+			//////
+				if (iigt_validateParcelDeliverySha1s(lpd))
+				{
+					// See if the message is an up-and-running, if so they have included their remote hwnd which we need
+					if (iigt_equalEqual(lpd->messageType, lpd->messageTypeLength, (u8*)cgcUpAndRunning, sizeof(cgcUpAndRunning) - 1))
+					{
+						// When they notify they're up and running, we have some additional information we need to update
+						ti->hwndRemoteMessage	= lpd->nExtra;		// They are reporting being up and running, store the hwnd
+						ti->isRunning			= true;
+					}
+
+					// Store the message locally
+					lnMailId = iigt_stowMail(gsInterfaceSelf, (u8*)lpd, lpd->totalMessageLength, &mail);
+
+					// If it was stored properly, post it, if not then delete it
+					if (lnMailId != -1)
+						PostMessage((HWND)ti->hwndBound, WMGT_PARCEL_DELIVERY, ti->interfaceId, lnMailId);
+				}
+
+
+			//////////
+			// When we get here, the message was either stored or not (we'll know by the lnMailId)
+			//////
+				if (lnMailId == -1)
+				{
+					// Store the message locally
+					lnMailId = iigt_stowMail(gsInterfaceSelf, (u8*)lpd, lpd->totalMessageLength, &mail);
+
+					// If it was stored properly, post it, if not then delete it
+					if (lnMailId != -1)
+						PostMessage((HWND)ti->hwndBound, WMGT_PARCEL_DELIVERY_FAILURE, ti->interfaceId, lnMailId);
+				}
+		}
+	}
+
+
+
+
+//////////
+//
 // Called to create a parcel delivery structure suitable for transmission to a remote source
 //
 //////
@@ -1168,9 +1379,13 @@ _asm int 3;
 			lpd->messageType		= (u8*)(sizeof(SParcelDelivery));
 			lpd->content			= (u8*)(sizeof(SParcelDelivery) + tnMessageTypeLength);
 
-			// Store the variable data into the data packet
-			memcpy((u8*)lpd + sizeof(SParcelDelivery),							tcMessageType,		tnMessageTypeLength);
-			memcpy((u8*)lpd + sizeof(SParcelDelivery) + tnMessageTypeLength,	tcGeneralMessage,	tnGeneralMessageLength);
+			// Store the variable data portions into the data packet
+			// The message type is required
+			memcpy((u8*)lpd + sizeof(SParcelDelivery), tcMessageType, tnMessageTypeLength);
+
+			// The general message is optional
+			if (tcGeneralMessage)
+				memcpy((u8*)lpd + sizeof(SParcelDelivery) + tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength);
 
 			// Apply the SHA-1 values
 			iigt_computeSha1OnParcelDelivery(lpd);
@@ -1178,6 +1393,214 @@ _asm int 3;
 		}
 		// Indicate our success or failure
 		return(lpd);
+	}
+
+
+
+
+//////////
+//
+// Called to append a label:value to the existing string if any
+//
+//////
+	void iigt_appendLabelColonValueString(u8** tcData, u32* tnLength, u8* tcLabel, u32 tnLabelLength, u8* tcValue, u32 tnValueLength)
+	{
+		u32		lnLength;
+		u8*		lcData;
+
+
+		// Make sure the environment is sane
+		if (tcData && tnLength && tcLabel && tcValue && tnLabelLength != 0 && tnValueLength != 0)
+		{
+			// Allocate the memory
+			lnLength	= *tnLength + tnLabelLength + tnValueLength + 2;
+			lcData		= (u8*)malloc(lnLength);
+			if (lcData)
+			{
+				//////////
+				// Copy the existing part
+				//////
+					if (*tnLength != 0)
+						memcpy(lcData, *tcData, *tnLength);
+
+
+				//////////
+				// Append the label
+				//////
+					memcpy(lcData + *tnLength,						tcLabel,	tnLabelLength);
+					memcpy(lcData + *tnLength + 1 + tnLabelLength,	tcValue,	tnValueLength);
+
+					// Append hard-coded components
+					lcData[*tnLength + tnLabelLength]						= ':';		// Colon
+					lcData[*tnLength + tnLabelLength + 1 + tnValueLength]	= 13;		// Carriage Return
+
+
+				//////////
+				// Free the original
+				//////
+					if (*tcData)
+						free(*tcData);
+
+
+				//////////
+				// Update the pointer
+				//////
+					*tcData		= lcData;
+					*tnLength	= lnLength;
+			}
+		}
+	}
+
+	void iigt_appendLabelColonValueInteger(u8** tcData, u32* tnLength, u8* tcLabel, u32 tnLabelLength, u32 tnValue)
+	{
+		s8 buffer[32];
+
+		sprintf_s(buffer, sizeof(buffer), "%u\0", tnValue);
+		iigt_appendLabelColonValueString(tcData, tnLength, tcLabel, tnLabelLength, (u8*)buffer, strlen(buffer));
+	}
+
+	void iigt_appendLabelColonValueFloat(u8** tcData, u32* tnLength, u8* tcLabel, u32 tnLabeLlength, f32 tfValue, u32 tnIntegers, u32 tnDecimals)
+	{
+		s8 format[32];
+		s8 buffer[32];
+
+		sprintf_s(format, sizeof(format), "%%%u.%u%s\\0\0", tnIntegers, tnDecimals, "f");
+		sprintf_s(buffer, sizeof(buffer), format, tfValue);
+		iigt_appendLabelColonValueString(tcData, tnLength, tcLabel, tnLabeLlength, (u8*)buffer, strlen(buffer));
+	}
+
+
+
+
+//////////
+//
+// Called to prepend a label:value before the existing string if any
+//
+//////
+	void iigt_prependLabelColonValueString(u8** tcData, u32* tnLength, u8* tcLabel, u32 tnLabelLength, u8* tcValue, u32 tnValueLength)
+	{
+		u32		lnLength;
+		u8*		lcData;
+
+
+		// Make sure the environment is sane
+		if (tcData && tnLength && tcLabel && tcValue && tnLabelLength != 0 && tnValueLength != 0)
+		{
+			// Allocate the memory
+			lnLength	= *tnLength + tnLabelLength + tnValueLength + 2;
+			lcData		= (u8*)malloc(lnLength);
+			if (lcData)
+			{
+				//////////
+				// Copy the existing part
+				//////
+					if (*tnLength != 0)
+						memcpy(lcData + tnLabelLength + 1 + tnValueLength + 1, *tcData, *tnLength);
+
+
+				//////////
+				// Prepend the label
+				//////
+					memcpy(lcData,						tcLabel,	tnLabelLength);
+					memcpy(lcData + tnLabelLength + 1,	tcValue,	tnValueLength);
+
+					// Append hard-coded components
+					lcData[tnLabelLength]						= ':';		// Colon
+					lcData[tnLabelLength + 1 + tnValueLength]	= 13;		// Carriage Return
+
+
+				//////////
+				// Free the original
+				//////
+					if (*tcData)
+						free(*tcData);
+
+
+				//////////
+				// Update the pointer
+				//////
+					*tcData		= lcData;
+					*tnLength	= lnLength;
+			}
+		}
+	}
+
+	void iigt_prependLabelColonValueInteger(u8** tcData, u32* tnLength, u8* tcLabel, u32 tnLabelLength, u32 tnValue)
+	{
+		s8 buffer[32];
+
+		sprintf_s(buffer, sizeof(buffer), "%u\0", tnValue);
+		iigt_prependLabelColonValueString(tcData, tnLength, tcLabel, tnLabelLength, (u8*)buffer, strlen(buffer));
+	}
+
+	void iigt_prependLabelColonValueFloat(u8** tcData, u32* tnLength, u8* tcLabel, u32 tnLabelLength, f32 tfValue, u32 tnIntegers, u32 tnDecimals)
+	{
+		s8 format[32];
+		s8 buffer[32];
+
+		sprintf_s(format, sizeof(format), "%u.%u%s\\0\0", tnIntegers, tnDecimals, "f");
+		sprintf_s(buffer, sizeof(buffer), format, tfValue);
+		iigt_prependLabelColonValueString(tcData, tnLength, tcLabel, tnLabelLength, (u8*)buffer, strlen(buffer));
+	}
+
+
+
+
+//////////
+//
+// Called to obtain the value from a label:value if found
+//
+//////
+	void iigt_getLabelColonValueString(u8* tcSource, u32 tnSourceLength, u8* tcLabel, u32 tnLabelLength, u8** tcText, u32* tnTextLength)
+	{
+		u32		lnLabelLength;
+		u8*		lcLabel;
+
+
+		// Locate the line
+		iigt_findLine(tcSource, tnSourceLength, tcLabel, tnLabelLength, &lcLabel, &lnLabelLength, tcText, tnTextLength);
+	}
+
+	void iigt_getLabelColonValueInteger(u8* tcSource, u32 tnSourceLength, u8* tcLabel, u32 tnLabelLength, u32* tnValue)
+	{
+		u32		lnLabelLength, lnValueLength;
+		u8*		lcLabel;
+		u8*		lcValue;
+		u8		buffer[64];
+
+
+		// Locate the line
+		if (iigt_findLine(tcSource, tnSourceLength, tcLabel, tnLabelLength, &lcLabel, &lnLabelLength, &lcValue, &lnValueLength))
+		{
+			memset(buffer, 0, sizeof(buffer));
+			memcpy(buffer, lcValue, min(lnValueLength, sizeof(buffer) - 1));
+			*tnValue = iigt_get_u32(buffer, true);
+
+		} else {
+			// Not found
+			*tnValue= 0;
+		}
+	}
+
+	void iigt_getLabelColonValueFloat(u8* tcSource, u32 tnSourceLength, u8* tcLabel, u32 tnLabelLength, f32* tfValue)
+	{
+		u32		lnLabelLength, lnValueLength;
+		u8*		lcLabel;
+		u8*		lcValue;
+		u8		buffer[64];
+
+
+		// Locate the line
+		if (iigt_findLine(tcSource, tnSourceLength, tcLabel, tnLabelLength, &lcLabel, &lnLabelLength, &lcValue, &lnValueLength))
+		{
+			memset(buffer, 0, sizeof(buffer));
+			memcpy(buffer, lcValue, min(lnValueLength, sizeof(buffer) - 1));
+			*tfValue = (f32)atof((s8*)&buffer[0]);
+
+		} else {
+			// Not found
+			*tfValue= 0.0f;
+		}
 	}
 
 
@@ -1342,9 +1765,9 @@ _asm int 3;
 			// We iterate through each byte an do a computation
 			for (lnI = 0; lnI < tnDataLength; lnI++)
 			{
-				lnValue +=	(u32)tcData[lnI]										+		/* base character */
+				lnValue +=	(u32)tcData[lnI]												+		/* base character */
 							iigt_shiftLeft((u32)iigt_swapBits(tcData[lnI]),			8)		+		/* reverse bit order of base character */
-							iigt_shiftLeft((u32)         (255 - tcData[lnI]),	16)		+		/* 255 - base character */
+							iigt_shiftLeft((u32)         (255 - tcData[lnI]),		16)		+		/* 255 - base character */
 							iigt_shiftLeft((u32)iigt_swapBits(255 - tcData[lnI]),	24);			/* reverse bit order of (255 - base character) */
 			}
 		}
