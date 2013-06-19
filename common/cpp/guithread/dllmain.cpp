@@ -10,19 +10,22 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 {
 	switch (ul_reason_for_call)
 	{
-	case DLL_PROCESS_ATTACH:
-		InitializeCriticalSection(&gsemUniqueIdAccess);
-		if (!gsInterfaceSelf)
-		{
-			iigt_createNewSInterface(&gsInterfaceSelf);
-			gsInterfaceSelf->isRunning = true;
-		}
+		case DLL_PROCESS_ATTACH:
+			// Assigning unique IDs
+			InitializeCriticalSection(&gsemUniqueIdAccess);
 
-		break;
-	case DLL_THREAD_ATTACH:
-	case DLL_THREAD_DETACH:
-	case DLL_PROCESS_DETACH:
-		break;
+			// An interface for messages sent to self
+			if (!gsInterfaceSelf)
+			{
+				iigt_createNewSInterface(&gsInterfaceSelf);
+				gsInterfaceSelf->isRunning = true;
+			}
+			break;
+
+		case DLL_THREAD_ATTACH:
+		case DLL_THREAD_DETACH:
+		case DLL_PROCESS_DETACH:
+			break;
 	}
 	return TRUE;
 }

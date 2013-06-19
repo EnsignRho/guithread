@@ -36,7 +36,7 @@
 	u32					guithread_launch_remote_using_interface		(u32 tnInterfaceId, u8* tcCommandLine);
 	u32					guithread_delete_interface					(u32 tnInterfaceId);
 	u32					guithread_get_message						(u32 tnInterfaceId, u32 tnIdentifier, u8* tcMessage, u32 tnMessageLength);
-	u32					guithread_send_message						(u32 tnInterfaceId, u32 tnIdentifier, u8* tcMessage, u32 tnMessageLength);
+	u32					guithread_send_message						(u32 tnInterfaceId, u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength);
 	u32					guithread_hwnd_on_taskbar					(u32 tnHwnd, u32 tnShow);
 
 
@@ -52,6 +52,7 @@
 	SPipe*				iigt_createNewPipeStructure					(u8* tcPipeName);
 	int					iigt_strlen									(u8* tcData);
 	void				iigt_copyToShortestStringLength				(u8* tcDestination, u32 tnDestinationLength, u8* tcSource, u32 tnSourceLength, bool tlNullTerminate, bool tlPad, u8 tcPadChar);
+	u32					iigt_sendMessageViaPipe						(SInterface* ti, u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength);
 	void				iigt_receiveAndProcessMessage				(SInterface* ti, u8* tcGeneralMessage, u32 tnGeneralMessageLength, u32 tnHwnd);
 	u32					iigt_stowMail								(SInterface* ti, u8* tcText, u32 tnTextLength, SParcel** tsMail);
 	SParcel*			iigt_appendMail								(SParcel** mailbagRoot, u8* tcText, u32 tnTextLength, bool tlCopyString);
@@ -61,14 +62,16 @@
 	SInterface*			iigt_createNewSInterface					(SInterface** root);
 	void				iigt_createSPipe							(SPipe** pipe);
 	u32					iigt_launchRemoteProcess					(SInterface* ti);
+	SParcelDelivery*	iigt_createParcelDelivery					(u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength);
 
 
 	// SHA-1 validation
-	bool				iigt_validateParcelDeliverySha1s			(SParcelDelivery* tsPd);
-	bool				iigt_validateParcelDeliverylSha1_32_lftve_mt_c(SParcelDelivery* tsPd);
-	bool				iigt_validateParcelDeliverySha1_32_messageType(SParcelDelivery* tsPd);
-	bool				iigt_validateParcelDeliverySha1_32_content	(SParcelDelivery* tsPd);
-	bool				iigt_validateParcelDeliverySha1_32_all		(SParcelDelivery* tsPd);
+	u32					iigt_computeSha1OnParcelDelivery			(SParcelDelivery* tpd);
+	bool				iigt_validateParcelDeliverySha1s			(SParcelDelivery* tpd);
+	bool				iigt_validateParcelDeliverylSha1_32_lftve_mt_c(SParcelDelivery* tpd);
+	bool				iigt_validateParcelDeliverySha1_32_messageType(SParcelDelivery* tpd);
+	bool				iigt_validateParcelDeliverySha1_32_content	(SParcelDelivery* tpd);
+	bool				iigt_validateParcelDeliverySha1_32_all		(SParcelDelivery* tpd);
 	u32					iigt_computeSha1_32							(u8* tcData, u32 tnDataLength);
 	u8					iigt_swapBits								(u8 tcChar);
 	u32					iigt_shiftLeft								(u32 tnValue, u32 tnBits);

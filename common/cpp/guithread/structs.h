@@ -71,8 +71,7 @@
 		struct SParcel
 		{
 			SParcel*	next;										// Pointer to next mailbag entry in the chain
-			u32			uniqueId;									// Unique mail id number
-			u32			remoteMailId;								// The mail id used by the remote app for mail sent to us (we use our own uniqueId, but this is their uniqueId)
+			u32			mailId;										// Unique mail id number
 
 			// Stored data for this entry
 			u8*			data;										// Pointer to start of data
@@ -137,7 +136,7 @@
 			u8*				commandLine;								// Provided for when an application is launched using this interface
 
 			// Critical sections for atomic access during crucial operations
-			CRITICAL_SECTION	cs_mail;							// Used for low-level mail operations
+			CRITICAL_SECTION	cs_mailbag;							// Used for low-level mail operations
 			CRITICAL_SECTION	cs_pipe;							// Used for low-level pipe operations
 			CRITICAL_SECTION	cs_generalMessage;					// Used for general messages
 

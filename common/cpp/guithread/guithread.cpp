@@ -61,8 +61,9 @@
 //////
 	u32 guithread_launch_remote_using_interface(u32 tnInterfaceId, u8* tcCommandLine)
 	{
-		u32			lnResult;
+		u32			lnResult, lnLength;
 		SInterface*	li;
+		s8			buffer[64];
 
 
 		// Make sure our environment is sane
@@ -72,14 +73,34 @@
 		li = iigt_FindSInterface(&gsInterfaces, tnInterfaceId);
 		if (li)
 		{
-			// Store the parameters
-			iigt_copyString(&li->commandLine,	NULL, tcCommandLine,	strlen((s8*)tcCommandLine),		true);
+			// Allocate additional space for our added parameters:  "-hwnd:1234567890 -pipe:" + whateverName
+			lnLength		= strlen((s8*)tcCommandLine) + 16/*-hwnd:1234567890*/ + 1 + 6/*-pipe:*/ + li->pipe->nameLength;
+			li->commandLine = (u8*)malloc(lnLength);
+			if (li->commandLine)
+			{
+_asm int 3;
+				// Initialize it all to spaces
+				memset(li->commandLine, 32, lnLength);
 
-			// Create the worker thread
-			li->threadHandle = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)&igt_launchUsingInterfaceWorkerThread, li, NULL, &li->threadId);
+				// Copy the base command line and parameters
+				memcpy(&li->commandLine, tcCommandLine,	strlen((s8*)tcCommandLine));
 
-			// Return the interfaceId
-			lnResult = li->interfaceId;
+				// Append the -hwnd:1234567890 portion
+				sprintf_s(buffer, sizeof(buffer) - 1, " -hwnd:%u\0", li->hwndLocalMessage);
+				memcpy(&li->commandLine + strlen((s8*)tcCommandLine), buffer, strlen(buffer));
+
+				// Append the -hwnd:1234567890 portion
+				memset(buffer, 0, sizeof(buffer));
+				sprintf_s(buffer, sizeof(buffer) - 1, " -pipe:\0");
+				memcpy(buffer + strlen(buffer), li->pipe->name, li->pipe->nameLength);
+				memcpy(&li->commandLine + strlen((s8*)li->commandLine), buffer, strlen(buffer));
+
+				// Create the worker thread
+				li->threadHandle = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)&igt_launchUsingInterfaceWorkerThread, li, NULL, &li->threadId);
+
+				// Return the interfaceId
+				lnResult = li->interfaceId;
+			}
 		}
 
 		// Indicate our status
@@ -196,10 +217,22 @@
 // If cMessage is NULL, then a simple message is sent with only nValue and nExtra being used (nIdentifier is ignored, as is nMessageLength)
 //
 //////
-	u32 guithread_send_message(u32 tnInterfaceId, u32 tnIdentifier, u8* tcMessage, u32 tnMessageLength)
+	u32 guithread_send_message(u32 tnInterfaceId, u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength)
 	{
-		// Indicate failure
-		return(-4);
+		SInterface* li;
+
+
+		// Find our interface
+		li = iigt_FindSInterface(&gsInterfaces, tnInterfaceId);
+		if (li)
+		{
+			// Indicate number of bytes written
+			return(iigt_sendMessageViaPipe(li, tnValue, tnExtra, tcMessageType, tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength));
+
+		} else {
+			// Failure
+			return(-1);
+		}
 	}
 
 
@@ -693,6 +726,55 @@
 
 //////////
 //
+// Called to send a message via a named pipe
+//
+//////
+	u32 iigt_sendMessageViaPipe(SInterface* ti, u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength)
+	{
+		u32					lnNumwritten;
+		SParcelDelivery*	lpd;
+
+
+		//////////
+		// Prepare the parcel delivery message
+		//////
+			lpd = iigt_createParcelDelivery(tnValue, tnExtra, tcMessageType, tnMessageTypeLength, tcGeneralMessage, tnGeneralMessageLength);
+			if (!lpd)
+				return(-1);	// Failure
+
+
+		//////////
+		// Write data to pipe
+		//////
+			if (ti->hwndRemoteMessage != 0)
+			{
+				lnNumwritten = iigt_writeToPipe(ti, (u8*)&lpd, lpd->totalMessageLength);
+				if (lnNumwritten == lpd->totalMessageLength)
+				{
+					// We're good, there's a valid message in the pipe
+					SendMessage((HWND)ti->hwndRemoteMessage, WMGT_PARCEL_DELIVERY, lnNumwritten, 0);
+
+					// Indicate success
+					return(lnNumwritten);
+
+				} else {
+					// Failure
+					if (lnNumwritten != 0)
+					{
+						// We need to burn the data in the pipe so it doesn't clog up the works
+						SendMessage((HWND)ti->hwndRemoteMessage, WMGT_PARCEL_DELIVERY_FAILURE, lnNumwritten, 0);
+					}
+				}
+			}
+			// Failure
+			return(-1);
+	}
+
+
+
+
+//////////
+//
 // Receives the text form of a message that is a general message to be conveyed unto the
 // bound machine.
 //
@@ -776,7 +858,7 @@
 					*tsMail = mail;
 
 				// Return the mail id
-				return(mail->uniqueId);
+				return(mail->mailId);
 			}
 		}
 		// Indicate failure
@@ -837,7 +919,7 @@
 				}
 
 				// Store the unique id, encryption
-				mailNew->uniqueId	= iigt_getNextUniqueId();
+				mailNew->mailId	= iigt_getNextUniqueId();
 
 				// All done
 				return(mailNew);
@@ -882,7 +964,7 @@
 			while (mail)
 			{
 				// See if this is our man
-				if (mail->uniqueId == tnMailId)
+				if (mail->mailId == tnMailId)
 					break;		// We found it
 
 				// Move to next parcel
@@ -905,6 +987,47 @@
 //////
 	void iigt_deleteMailParcel(SInterface* ti, u32 tnMailId)
 	{
+		SParcel*	mail;
+		SParcel**	mailLast;
+
+
+		// Lock the semaphore
+		EnterCriticalSection(&ti->cs_mailbag);
+
+		// Iterate through each entry, deleting the one specified
+		mail		= ti->mailbag;
+		mailLast	= &ti->mailbag;
+		while (mail)
+		{
+			// Is this the one to delete?
+			if (mail->mailId == tnMailId)
+			{
+				// Yes
+				// Make the one before this point to the one after this
+				*mailLast = mail->next;
+
+				// Delete any data
+				if (mail->data)
+				{
+					free(mail->data);
+					mail->data			= NULL;
+					mail->dataLength	= 0;
+				}
+
+				// Delete the item itself
+				free(mail);
+
+				// All done!
+				break;
+
+			} else {
+				// Nope, keep going
+				mailLast = &mail->next;
+			}
+
+			// Move to next entry
+			mail = mail->next;
+		}
 	}
 
 
@@ -947,7 +1070,7 @@
 				memset(liNew, 0, sizeof(SInterface));
 
 				// Initialize the semaphore
-				InitializeCriticalSection(&liNew->cs_mail);
+				InitializeCriticalSection(&liNew->cs_mailbag);
 				InitializeCriticalSection(&liNew->cs_pipe);
 				InitializeCriticalSection(&liNew->cs_generalMessage);
 
@@ -1019,25 +1142,107 @@
 
 //////////
 //
+// Called to create a parcel delivery structure suitable for transmission to a remote source
+//
+//////
+	SParcelDelivery* iigt_createParcelDelivery(u32 tnValue, u32 tnExtra, u8* tcMessageType, u32 tnMessageTypeLength, u8* tcGeneralMessage, u32 tnGeneralMessageLength)
+	{
+		u32					lnLength;
+		SParcelDelivery*	lpd;
+
+
+		lnLength	= sizeof(SParcelDelivery) + tnMessageTypeLength + tnGeneralMessageLength;
+		lpd			= (SParcelDelivery*)malloc(lnLength);
+		if (lpd)
+		{
+			// We're good, initialize everything to NULL
+			memset(lpd, 0, lnLength);
+
+			// Store each component
+			lpd->nValue				= tnValue;
+			lpd->nExtra				= tnExtra;
+			lpd->messageTypeLength	= tnMessageTypeLength;
+			lpd->contentLength		= tnGeneralMessageLength;
+
+			// Store our pointers into our data packet
+			lpd->messageType		= (u8*)(sizeof(SParcelDelivery));
+			lpd->content			= (u8*)(sizeof(SParcelDelivery) + tnMessageTypeLength);
+
+			// Store the variable data into the data packet
+			memcpy((u8*)lpd + sizeof(SParcelDelivery),							tcMessageType,		tnMessageTypeLength);
+			memcpy((u8*)lpd + sizeof(SParcelDelivery) + tnMessageTypeLength,	tcGeneralMessage,	tnGeneralMessageLength);
+
+			// Apply the SHA-1 values
+			iigt_computeSha1OnParcelDelivery(lpd);
+			// All done!
+		}
+		// Indicate our success or failure
+		return(lpd);
+	}
+
+
+
+
+//////////
+//
+// Called to compute the SHA-1 portions of the indicated general mesage
+//
+//////
+	u32 iigt_computeSha1OnParcelDelivery(SParcelDelivery* tpd)
+	{
+		u32 lnSha1_32;
+
+
+		// Append th SHA-1 values
+		lnSha1_32	= 0;
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->totalMessageLength,	4);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->fromId,				4);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->toId,				4);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->nValue,				4);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->nExtra,				4);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->messageTypeLength,	4);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)&tpd->contentLength,		4);
+		tpd->sha1_32_lftve_mt_c	= lnSha1_32;
+
+		// SHA-1 Message Type and Content lengths
+		tpd->messageTypeSha1_32		= iigt_computeSha1_32((u8*)tpd->messageType,	tpd->messageTypeLength);
+		tpd->contentLengthSha1_32	= iigt_computeSha1_32((u8*)tpd->content,		tpd->contentLength);
+
+		// We need to get the SHA-1 values
+		lnSha1_32			= 0;
+		lnSha1_32			+=	iigt_computeSha1_32((u8*)tpd,			sizeof(SParcelDelivery) - sizeof(s8*)/*content*/ - sizeof(s8*)/*messageType*/ - sizeof(u32)/*sha1_32_all*/);
+		lnSha1_32			+=	iigt_computeSha1_32(tpd->messageType,	tpd->messageTypeLength);
+		lnSha1_32			+=	iigt_computeSha1_32(tpd->content,		tpd->contentLength);
+		tpd->sha1_32_all	= lnSha1_32;
+
+		// Return the overall sha-1
+		return(lnSha1_32);
+	}
+
+
+
+
+//////////
+//
 // Called to validate a parcel delivery to make sure it is properly validated
 //
 //////
-	bool iigt_validateParcelDeliverySha1s(SParcelDelivery* tsPd)
+	bool iigt_validateParcelDeliverySha1s(SParcelDelivery* tpd)
 	{
 		// Check some header info
-		if (!iigt_validateParcelDeliverylSha1_32_lftve_mt_c(tsPd))
+		if (!iigt_validateParcelDeliverylSha1_32_lftve_mt_c(tpd))
 			return(false);		// Failure 
 
 		// Check messageType text
-		if (!iigt_validateParcelDeliverySha1_32_messageType(tsPd))
+		if (!iigt_validateParcelDeliverySha1_32_messageType(tpd))
 			return(false);		// Failure 
 
 		// Check content body
-		if (!iigt_validateParcelDeliverySha1_32_content(tsPd))
+		if (!iigt_validateParcelDeliverySha1_32_content(tpd))
 			return(false);		// Failure 
 
 		// Check in its entirety
-		if (!iigt_validateParcelDeliverySha1_32_all(tsPd))
+		if (!iigt_validateParcelDeliverySha1_32_all(tpd))
 			return(false);		// Failure 
 
 		// We're good
@@ -1077,9 +1282,9 @@
 // For now we don't use a true SHA-1 algorithm, but just add up the bytes
 //
 //////
-	bool iigt_validateParcelDeliverySha1_32_messageType(SParcelDelivery* tsPd)
+	bool iigt_validateParcelDeliverySha1_32_messageType(SParcelDelivery* tpd)
 	{
-		return(tsPd->messageTypeSha1_32 == iigt_computeSha1_32(tsPd->messageType, tsPd->messageTypeLength));
+		return(tpd->messageTypeSha1_32 == iigt_computeSha1_32(tpd->messageType, tpd->messageTypeLength));
 	}
 
 
@@ -1090,9 +1295,9 @@
 // For now we don't use a true SHA-1 algorithm, but just add up the bytes
 //
 //////
-	bool iigt_validateParcelDeliverySha1_32_content(SParcelDelivery* tsPd)
+	bool iigt_validateParcelDeliverySha1_32_content(SParcelDelivery* tpd)
 	{
-		return(tsPd->contentLengthSha1_32 == iigt_computeSha1_32(tsPd->content, tsPd->contentLength));
+		return(tpd->contentLengthSha1_32 == iigt_computeSha1_32(tpd->content, tpd->contentLength));
 	}
 
 
@@ -1103,17 +1308,17 @@
 // For now we don't use a true SHA-1 algorithm, but just add up the bytes
 //
 //////
-	bool iigt_validateParcelDeliverySha1_32_all(SParcelDelivery* tsPd)
+	bool iigt_validateParcelDeliverySha1_32_all(SParcelDelivery* tpd)
 	{
 		u32		lnSha1_32;
 
 
 		// Compute the sha1-32 value
 		lnSha1_32	= 0;
-		lnSha1_32	+=	iigt_computeSha1_32((u8*)tsPd,					sizeof(SParcelDelivery) - sizeof(s8*)/*content*/ - sizeof(s8*)/*messageType*/ - sizeof(u32)/*sha1_32_all*/);
-		lnSha1_32	+=	iigt_computeSha1_32((u8*)tsPd->messageType,		tsPd->messageTypeLength);
-		lnSha1_32	+=	iigt_computeSha1_32((u8*)tsPd->content,			tsPd->contentLength);
-		return(tsPd->sha1_32_all == lnSha1_32);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)tpd,					sizeof(SParcelDelivery) - sizeof(s8*)/*content*/ - sizeof(s8*)/*messageType*/ - sizeof(u32)/*sha1_32_all*/);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)tpd->messageType,		tpd->messageTypeLength);
+		lnSha1_32	+=	iigt_computeSha1_32((u8*)tpd->content,			tpd->contentLength);
+		return(tpd->sha1_32_all == lnSha1_32);
 	}
 
 

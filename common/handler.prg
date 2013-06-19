@@ -161,7 +161,7 @@ DEFINE CLASS GuiThreadHandler AS Session
 				* Launches an application and uses the specified nInterfaceId
 				DECLARE INTEGER		guithread_launch_remote_using_interface ;
 										IN (this.dll_name) ;
-										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
+										INTEGER	nInterfaceId, ;			&& The return value from the initial guithread_create_interface() function
 										STRING	cCommandLine			&& "c:\path\to\myapp.exe myparam1 myparam2"
 				
 				* Used to shut down the interface if required (should be called when a process is terminated)
@@ -176,7 +176,7 @@ DEFINE CLASS GuiThreadHandler AS Session
 				* Subsequent calls to a partially read message retrieves the entire message.
 				DECLARE INTEGER		guithread_get_message ;
 										IN (this.dll_name) ;
-										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
+										INTEGER	nInterfaceId, ;			&& The return value from the initial guithread_create_interface() function
 										INTEGER	nIdentifier, ;			&& The message's unique identifier
 										STRING@	cMessage, ;				&& Retrieve the message
 										INTEGER	nMessageLength			&& Space reserved in cMessage to retrieve the content
@@ -185,10 +185,13 @@ DEFINE CLASS GuiThreadHandler AS Session
 				* being used (nIdentifier is ignored, as is nMessageLength).
 				DECLARE INTEGER		guithread_send_message ;
 										IN (this.dll_name) ;
-										INTEGER	nInterfaceId			&& The return value from the initial guithread_create_interface() function
-										INTEGER	nIdentifier, ;			&& The unique identifier to convey for this message
-										STRING	cMessage, ;				&& Retrieve the message
-										INTEGER	nMessageLength			&& Space reserved in cMessage to retrieve the content
+										INTEGER	nInterfaceId, ;			&& The return value from the initial guithread_create_interface() function
+										INTEGER	nValue, ;				&& A numeric value to send
+										INTEGER	nExtra, ;				&& An extra numeric value to send
+										STRING	cMessageType, ;			&& A type of message being sent (user-defined)
+										INTEGER	nMessageTypeLength, ;	&& Length of the message type being sent
+										STRING	cGeneralMessage, ;		&& What message to send
+										INTEGER	nGeneralMessageLength	&& How long is the message we're sending?
 				
 				* Used to show or hide a form's window on the taskbar (useful for creating
 				* background windows that do not "consume" taskbar space, but are used for
