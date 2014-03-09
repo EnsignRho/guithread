@@ -3,7 +3,7 @@
 * master.prg
 *
 *****
-* June 13, 2013
+* November 07, 2012
 * by Rick C. Hodgin
 *****
 
@@ -24,8 +24,8 @@
 * Create the base handler object
 *****
 	SET PROCEDURE TO handler.prg ADDITIVE
-	PUBLIC goGuiThread
-	goGuiThread = NEWOBJECT("GuiThreadHandler")
+	PUBLIC goMultiThread
+	goMultiThread = NEWOBJECT("MultiThreadHandler")
 
 
 **********
